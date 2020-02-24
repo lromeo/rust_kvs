@@ -1,4 +1,5 @@
 // #![deny(missing_docs)]
+#![feature(seek_convenience)]
 
 //! # PNA Rust Project - Key Value KvStore
 //!
@@ -14,6 +15,7 @@
 //! assert_eq!(store.get("key1".to_owned()), None);
 //! ```
 //!
+// #![feature(seek_convenience)]
 #[macro_use]
 extern crate failure_derive;
 
@@ -24,16 +26,19 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::io::BufReader;
-use std::io::BufWriter;
 use std::path::PathBuf;
+use std::str;
+use std::{
+    io::{Seek, SeekFrom}
+};
 
 // Some error type
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Object to set, get, and remove key value pairs
 pub struct KvStore {
-    data: HashMap<String, String>,
-    writer: BufWriter<File>,
+    index: HashMap<String, u64>,
+    file: File,
 }
 
 #[derive(Fail, Debug)]
@@ -54,64 +59,101 @@ impl KvStore {
             value: value.clone(),
         };
 
-        self.log(c);
+        let position = self.log(c)?;
 
-        self.data.insert(key, value);
+        self.index.insert(key, position);
 
         Ok(())
     }
 
     /// Get a previously set value for a key
-    pub fn get(&self, key: String) -> Result<Option<String>> {
-        Ok(self.data.get(&key).cloned())
+    pub fn get(&mut self, key: String) -> Result<Option<String>> {
+        let position;
+
+        match self.index.get(&key) {
+            Some(value) => { position = value},
+            None => { return Ok(None) }
+        };
+
+        let mut line = String::new();
+        let mut reader = BufReader::new(&self.file);
+
+        reader.seek(SeekFrom::Start(*position))?;
+        reader.read_line(&mut line)?;
+
+        line = line.replace("\n", "");
+
+        let command: Command = serde_json::from_str(&line)?;
+
+        match command {
+            Command::Set { key: _, value } => Ok(Some(value)),
+            Command::Remove { key: _ } => Err(Error::from(KeyNotFound)),
+        }
     }
 
     /// Remove a previously set key value
     pub fn remove(&mut self, key: String) -> Result<()> {
         let c = Command::Remove { key: key.clone() };
 
-        self.log(c);
+        self.log(c)?;
 
-        match self.data.remove(&key) {
+        match self.index.remove(&key) {
             None => Err(Error::from(KeyNotFound)),
             Some(_value) => Ok(()),
         }
     }
 
-    fn log(&mut self, command: Command) {
-        let mut s = serde_json::to_string(&command).unwrap();
+    fn log(&mut self, command: Command) -> Result<u64> {
+        let position = self.file.stream_len()?;
+        let mut s = serde_json::to_string(&command)?;
 
         s.push_str("\n");
 
-        self.writer.write(&s.into_bytes()).unwrap();
+        self.file.write_all(&s.into_bytes())?;
+
+        Ok(position)
     }
 
     pub fn open(path: impl Into<PathBuf>) -> Result<KvStore> {
         let mut path = path.into();
         path.push("log");
 
-        let f = OpenOptions::new()
+        let mut f = OpenOptions::new()
             .read(true)
             .append(true)
             .create(true)
             .open(&path)
             .unwrap();
 
-        // Load previous data from log
-        let mut data = HashMap::new();
+        let file_len = f.stream_len()?;
+        let mut index = HashMap::new();
+        let mut position = 0;
+        let mut reader = BufReader::new(&f);
+        let mut line = String::new();
 
-        for line in BufReader::new(&f).lines() {
-            let command: Command = serde_json::from_str(&line.unwrap())?;
+        reader.seek(SeekFrom::Start(position))?;
+        reader.read_line(&mut line)?;
+
+        while position < file_len {
+            let command: Command = serde_json::from_str(&line)?;
 
             match command {
-                Command::Set { key, value } => data.insert(key, value),
-                Command::Remove { key } => data.remove(&key),
+                Command::Set { key, value: _ } => index.insert(key, position),
+                Command::Remove { key } => index.remove(&key),
             };
+
+            position += line.len() as u64;
+
+            line = String::new();
+
+            reader.seek(SeekFrom::Start(position))?;
+            reader.read_line(&mut line)?;
         }
 
+
         Ok(KvStore {
-            data: data,
-            writer: BufWriter::new(f),
+            index: index,
+            file: f,
         })
     }
 }
