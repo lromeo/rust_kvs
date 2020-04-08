@@ -20,10 +20,11 @@ fn main() -> Result<()> {
         .get_matches();
 
     let dir = std::env::current_dir().unwrap();
-    let mut store = KvStore::open(dir).unwrap();
 
     match matches.subcommand() {
         ("get", Some(sub_m)) => {
+            let mut store = KvStore::open(dir).unwrap();
+
             match store.get(sub_m.value_of("KEY").unwrap().to_owned())? {
                 Some(value) => println!("{}", value),
                 None => println!("Key not found"),
@@ -32,6 +33,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         ("set", Some(sub_m)) => {
+            let mut store = KvStore::open(dir).unwrap();
+
             store.set(
                 sub_m.value_of("KEY").unwrap().to_owned(),
                 sub_m.value_of("VALUE").unwrap().to_owned(),
@@ -39,13 +42,17 @@ fn main() -> Result<()> {
 
             Ok(())
         }
-        ("rm", Some(sub_m)) => match store.remove(sub_m.value_of("KEY").unwrap().to_owned()) {
-            Err(error) => {
-                println!("{}", error.as_fail());
-                Err(error)
+        ("rm", Some(sub_m)) => {
+            let mut store = KvStore::open(dir).unwrap();
+
+            match store.remove(sub_m.value_of("KEY").unwrap().to_owned()) {
+                Err(error) => {
+                    println!("{}", error.as_fail());
+                    Err(error)
+                }
+                Ok(_) => Ok(()),
             }
-            Ok(_) => Ok(()),
-        },
+        }
         _ => panic!(),
     }
 }

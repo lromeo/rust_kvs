@@ -6,13 +6,15 @@
 //! # Examples
 //! ```
 //! use kvs::KvStore;
-//! let mut store = KvStore::new();
+//! use tempfile::TempDir;
+//! let temp_dir = TempDir::new().unwrap();
+//! let mut store = KvStore::open(temp_dir.path()).unwrap();
 //!
 //! store.set("key1".to_owned(), "value1".to_owned());
-//! assert_eq!(store.get("key1".to_owned()), Some("value1".to_owned()));
+//! assert_eq!(store.get("key1".to_owned()).unwrap(), Some("value1".to_owned()));
 //!
 //! store.remove("key1".to_owned());
-//! assert_eq!(store.get("key1".to_owned()), None);
+//! assert_eq!(store.get("key1".to_owned()).unwrap(), None);
 //! ```
 //!
 // #![feature(seek_convenience)]
@@ -22,15 +24,14 @@ extern crate failure_derive;
 use failure::Error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::io::BufReader;
+use std::io::{Seek, SeekFrom};
 use std::path::PathBuf;
 use std::str;
-use std::{
-    io::{Seek, SeekFrom}
-};
 
 // Some error type
 pub type Result<T> = std::result::Result<T, Error>;
@@ -39,6 +40,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct KvStore {
     index: HashMap<String, u64>,
     file: File,
+    path: PathBuf,
 }
 
 #[derive(Fail, Debug)]
@@ -54,14 +56,20 @@ enum Command {
 impl KvStore {
     /// Set a key value pair to be accessible later
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
+        let trigger_compaction = self.index.contains_key(&key);
+
         let c = Command::Set {
             key: key.clone(),
-            value: value.clone(),
+            value,
         };
 
         let position = self.log(c)?;
 
         self.index.insert(key, position);
+
+        if trigger_compaction {
+            self.compaction()?;
+        }
 
         Ok(())
     }
@@ -71,8 +79,8 @@ impl KvStore {
         let position;
 
         match self.index.get(&key) {
-            Some(value) => { position = value},
-            None => { return Ok(None) }
+            Some(value) => position = value,
+            None => return Ok(None),
         };
 
         let mut line = String::new();
@@ -100,7 +108,9 @@ impl KvStore {
         match self.index.remove(&key) {
             None => Err(Error::from(KeyNotFound)),
             Some(_value) => Ok(()),
-        }
+        }?;
+
+        self.compaction()
     }
 
     fn log(&mut self, command: Command) -> Result<u64> {
@@ -114,15 +124,49 @@ impl KvStore {
         Ok(position)
     }
 
+    pub fn compaction(&mut self) -> Result<()> {
+        let next_path = self.path.clone().join("next_log");
+        let current_path = self.path.clone().join("current_log");
+
+        let mut next_index = HashMap::new();
+        let mut next_file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&next_path)
+            .unwrap();
+
+        next_file.set_len(0)?;
+
+        let mut reader = BufReader::new(&self.file);
+
+        for (key, position) in &self.index {
+            let mut line = String::new();
+
+            reader.seek(SeekFrom::Start(*position))?;
+            reader.read_line(&mut line)?;
+
+            next_index.insert(key.clone(), next_file.stream_len()?);
+            next_file.write_all(&line.into_bytes())?;
+        }
+
+        self.file = next_file;
+        self.index = next_index;
+
+        fs::remove_file(&current_path)?;
+        fs::rename(&next_path, &current_path)?;
+
+        Ok(())
+    }
+
     pub fn open(path: impl Into<PathBuf>) -> Result<KvStore> {
-        let mut path = path.into();
-        path.push("log");
+        let path = path.into();
 
         let mut f = OpenOptions::new()
             .read(true)
             .append(true)
             .create(true)
-            .open(&path)
+            .open(&path.join("current_log"))
             .unwrap();
 
         let file_len = f.stream_len()?;
@@ -150,10 +194,10 @@ impl KvStore {
             reader.read_line(&mut line)?;
         }
 
-
         Ok(KvStore {
-            index: index,
+            index,
             file: f,
+            path,
         })
     }
 }
