@@ -20,8 +20,10 @@
 // #![feature(seek_convenience)]
 #[macro_use]
 extern crate failure_derive;
+extern crate log;
 
 use failure::Error;
+use log::{Level, Metadata, Record};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -35,6 +37,22 @@ use std::str;
 
 // Some error type
 pub type Result<T> = std::result::Result<T, Error>;
+
+pub struct Logger;
+
+impl log::Log for Logger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= Level::Info
+    }
+
+    fn log(&self, record: &Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("{} - {}", record.target(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
 
 /// Object to set, get, and remove key value pairs
 pub struct KvStore {
@@ -52,6 +70,8 @@ enum Command {
     Set { key: String, value: String },
     Remove { key: String },
 }
+
+pub trait KvsEngine {}
 
 impl KvStore {
     /// Set a key value pair to be accessible later
@@ -199,5 +219,38 @@ impl KvStore {
             file: f,
             path,
         })
+    }
+}
+
+pub struct EngineStore {
+    file: File,
+}
+
+impl EngineStore {
+    pub fn new(path: impl Into<PathBuf>) -> Result<EngineStore> {
+        let path = path.into();
+
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&path.join("engine_store"))
+            .unwrap();
+
+        Ok(EngineStore { file })
+    }
+
+    pub fn set(&mut self, engine: &str) {
+        self.file.set_len(0).unwrap();
+
+        self.file.write_all(engine.as_bytes()).unwrap();
+    }
+
+    pub fn get(&mut self) -> String {
+        let mut contents = String::new();
+
+        self.file.read_to_string(&mut contents).unwrap();
+
+        contents
     }
 }

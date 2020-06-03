@@ -7,7 +7,7 @@ use kvs::KvStore;
 use kvs::Result;
 
 fn main() -> Result<()> {
-    let matches = App::new("My Super Program")
+    let matches = App::new("KVS Client")
         .version(env!("CARGO_PKG_VERSION"))
         .author(env!("CARGO_PKG_AUTHORS"))
         .subcommand(SubCommand::with_name("get").arg(Arg::with_name("KEY").required(true).index(1)))
