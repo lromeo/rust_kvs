@@ -37,6 +37,30 @@ use std::str;
 
 // Some error type
 pub type Result<T> = std::result::Result<T, Error>;
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Response {
+    pub value: Option<String>,
+    pub error: Option<String>,
+}
+
+impl Response {
+    pub fn new(result: Result<Option<String>>) -> Response {
+        match result {
+            Ok(value) => Response { value, error: None },
+            Err(error) => Response {
+                value: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    pub fn is_error(&self) -> bool {
+        match self.error {
+            Some(_) => true,
+            None => false,
+        }
+    }
+}
 
 pub struct Logger;
 
@@ -66,7 +90,8 @@ pub struct KvStore {
 pub struct KeyNotFound;
 
 #[derive(Serialize, Deserialize, Debug)]
-enum Command {
+pub enum Command {
+    Get { key: String },
     Set { key: String, value: String },
     Remove { key: String },
 }
@@ -116,6 +141,7 @@ impl KvStore {
         match command {
             Command::Set { key: _, value } => Ok(Some(value)),
             Command::Remove { key: _ } => Err(Error::from(KeyNotFound)),
+            _ => panic!(),
         }
     }
 
@@ -204,6 +230,7 @@ impl KvStore {
             match command {
                 Command::Set { key, value: _ } => index.insert(key, position),
                 Command::Remove { key } => index.remove(&key),
+                _ => panic!(),
             };
 
             position += line.len() as u64;
