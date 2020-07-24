@@ -5,7 +5,7 @@
 //!
 //! # Examples
 //! ```
-//! use kvs::KvStore;
+//! use kvs::{KvStore, KvsEngine};
 //! use tempfile::TempDir;
 //! let temp_dir = TempDir::new().unwrap();
 //! let mut store = KvStore::open(temp_dir.path()).unwrap();
@@ -21,6 +21,7 @@
 #[macro_use]
 extern crate failure_derive;
 extern crate log;
+extern crate sled;
 
 use failure::Error;
 use log::{Level, Metadata, Record};
@@ -30,8 +31,7 @@ use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
-use std::io::BufReader;
-use std::io::{Seek, SeekFrom};
+use std::io::{Seek, SeekFrom, BufReader, Write};
 use std::path::PathBuf;
 use std::str;
 
@@ -78,12 +78,6 @@ impl log::Log for Logger {
     fn flush(&self) {}
 }
 
-/// Object to set, get, and remove key value pairs
-pub struct KvStore {
-    index: HashMap<String, u64>,
-    file: File,
-    path: PathBuf,
-}
 
 #[derive(Fail, Debug)]
 #[fail(display = "Key not found")]
@@ -96,31 +90,21 @@ pub enum Command {
     Remove { key: String },
 }
 
-pub trait KvsEngine {}
+pub trait KvsEngine {
+    fn get(&mut self, key: String) -> Result<Option<String>>;
+    fn set(&mut self, key: String, value: String) -> Result<()>;
+    fn remove(&mut self, key: String) -> Result<()>;
+}
 
-impl KvStore {
-    /// Set a key value pair to be accessible later
-    pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        let trigger_compaction = self.index.contains_key(&key);
+/// Object to set, get, and remove key value pairs
+pub struct KvStore {
+    index: HashMap<String, u64>,
+    file: File,
+    path: PathBuf,
+}
 
-        let c = Command::Set {
-            key: key.clone(),
-            value,
-        };
-
-        let position = self.log(c)?;
-
-        self.index.insert(key, position);
-
-        if trigger_compaction {
-            self.compaction()?;
-        }
-
-        Ok(())
-    }
-
-    /// Get a previously set value for a key
-    pub fn get(&mut self, key: String) -> Result<Option<String>> {
+impl KvsEngine  for KvStore {
+    fn get(&mut self, key: String) -> Result<Option<String>> {
         let position;
 
         match self.index.get(&key) {
@@ -145,8 +129,26 @@ impl KvStore {
         }
     }
 
-    /// Remove a previously set key value
-    pub fn remove(&mut self, key: String) -> Result<()> {
+    fn set(&mut self, key: String, value: String) -> Result<()> {
+        let trigger_compaction = self.index.contains_key(&key);
+
+        let c = Command::Set {
+            key: key.clone(),
+            value,
+        };
+
+        let position = self.log(c)?;
+
+        self.index.insert(key, position);
+
+        if trigger_compaction {
+            self.compaction()?;
+        }
+
+        Ok(())
+    }
+
+    fn remove(&mut self, key: String) -> Result<()> {
         let c = Command::Remove { key: key.clone() };
 
         self.log(c)?;
@@ -158,7 +160,9 @@ impl KvStore {
 
         self.compaction()
     }
+}
 
+impl KvStore {
     fn log(&mut self, command: Command) -> Result<u64> {
         let position = self.file.stream_len()?;
         let mut s = serde_json::to_string(&command)?;
@@ -249,13 +253,57 @@ impl KvStore {
     }
 }
 
+pub struct SledKvStore {
+    db: sled::Db
+}
+
+impl  SledKvStore {
+    pub fn open(path: impl Into<PathBuf>) -> Result<SledKvStore> {
+        let path = path.into();
+
+        let db = sled::open(path.join("current_sled_log"))?;
+
+        Ok(SledKvStore { db })
+    }
+}
+
+impl KvsEngine for SledKvStore {
+    fn get(&mut self, key: String) -> Result<Option<String>> {
+        let value = self.db.get(&key)?;
+
+        match value {
+            Some(vec) => Ok(Some(str::from_utf8(&vec).unwrap().to_owned())),
+            None => Ok(None)
+        }
+    }
+
+    fn set(&mut self, key: String, value: String) -> Result<()> {
+        self.db.insert(key.into_bytes(), value.into_bytes())?;
+
+        self.db.flush()?;
+
+        Ok(())
+    }
+
+    fn remove(&mut self, key: String) -> Result<()> {
+        let result = self.db.remove(&key)?;
+
+        self.db.flush()?;
+
+        match result {
+            Some(_) => Ok(()),
+            None => Err(Error::from(KeyNotFound))
+        }
+    }
+}
+
 pub struct EngineStore {
     file: File,
 }
 
 impl EngineStore {
     pub fn new(path: impl Into<PathBuf>) -> Result<EngineStore> {
-        let path = path.into();
+        let path: PathBuf = path.into();
 
         let file = OpenOptions::new()
             .read(true)

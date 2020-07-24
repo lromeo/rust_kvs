@@ -1,17 +1,11 @@
 extern crate clap;
 
 use clap::{App, Arg};
-
-use kvs::Command;
-use kvs::EngineStore;
-use kvs::KvStore;
-use kvs::Logger;
-use kvs::Response;
-use kvs::Result;
-use std::io::Read;
-use std::io::Write;
+use kvs::{KvsEngine, Result, Response, Logger, KvStore, SledKvStore, EngineStore, Command};
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::str;
+use std::path::PathBuf;
 
 #[macro_use]
 extern crate failure;
@@ -41,20 +35,15 @@ fn main() -> Result<()> {
 
     let dir = std::env::current_dir().unwrap();
 
-    let mut engine_store = EngineStore::new(dir)?;
+    check_engine(engine, &dir)?;
 
-    let last_engine = engine_store.get();
-
-    if last_engine.is_empty() || last_engine == engine {
-        engine_store.set(engine);
-    } else {
-        Err(format_err!("Engine does not match"))?
-    }
+    let mut store: Box<dyn KvsEngine> = match engine {
+        "kvs" => Box::new(KvStore::open(dir)?),
+        "sled" => Box::new(SledKvStore::open(dir)?),
+        _ => panic!("unknown store")
+    };
 
     let listener = TcpListener::bind(address)?;
-
-    let dir = std::env::current_dir().unwrap();
-    let mut store = KvStore::open(dir).unwrap();
 
     for stream in listener.incoming() {
         let mut stream = stream?;
@@ -72,7 +61,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn get_result(string: &str, store: &mut KvStore) -> Result<Option<String>> {
+fn get_result(string: &str, store: &mut Box<dyn KvsEngine>) -> Result<Option<String>> {
     let result = match serde_json::from_str(string).unwrap() {
         Command::Set { key, value } => {
             store.set(key, value)?;
@@ -87,4 +76,17 @@ fn get_result(string: &str, store: &mut KvStore) -> Result<Option<String>> {
     };
 
     Ok(result)
+}
+
+fn check_engine(engine: &str, dir: &PathBuf) -> Result<()> {
+    let mut engine_store = EngineStore::new(dir)?;
+
+    let last_engine = engine_store.get();
+
+    if last_engine.is_empty() || last_engine == engine {
+        engine_store.set(engine);
+        Ok(())
+    } else {
+        Err(format_err!("Engine does not match"))
+    }
 }
